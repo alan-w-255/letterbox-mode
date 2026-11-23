@@ -27,8 +27,9 @@
 ;;
 ;; Select a region of text you want to censor and call M-x
 ;; letterbox-add, the selected region will be letterboxed/censored.
-;; Call M-x letterbox-remove to remove all letterboxes, or M-x to
-;; toggle the letterboxes (without removing them).  Some use cases:
+;; Call M-x letterbox-remove to remove all letterboxes, or M-x
+;; letterbox-toggle to toggle the letterboxes (without removing them).
+;; Some use cases:
 ;;
 ;;	 This is a buffer with some sensitive information. 123456 is
 ;;	 the password for my bank account, and qwerty is my account
@@ -53,13 +54,55 @@
 
 ;;; Code:
 
+(defvar letterbox-current-text nil
+  "Letterboxed regions of the current buffer.
+
+Each element is a cons cell (BEG . END) of markers, so the
+letterboxes follow the text when the buffer is edited.")
+(make-variable-buffer-local 'letterbox-current-text)
+
+(defvar letterbox-is-visible t
+  "Whether the letterboxes of the current buffer are displayed.")
+(make-variable-buffer-local 'letterbox-is-visible)
+
+(defgroup letterbox nil
+  "Letterbox text in current buffer."
+  :group 'convenience
+  :prefix "letterbox-")
+
+(defun letterbox--color ()
+  "Return the color used to draw a letterbox.
+
+The text is drawn in this color on a background of the same
+color, so a letterbox looks like a solid, unreadable block.  The
+color is taken from the foreground of the `default' face so it
+follows the current theme."
+  (let ((color (face-attribute 'default :foreground nil t)))
+    (if (or (not (stringp color))
+            (member color '("unspecified-fg" "unspecified-bg")))
+        "grey40"
+      color)))
+
+(defface letterbox-face
+  '((t :background "grey40" :foreground "grey40"))
+  "Face used to hide letterboxed text.
+
+This is the fallback used for the letterbox color; the actual
+colors are computed from the `default' face by
+`letterbox-refresh-overlays', see `letterbox--color'."
+  :group 'letterbox)
+
 ;;;###autoload
 (define-minor-mode letterbox-mode
   "Mode for hiding sensitive text on a buffer.
 
 After activating this mode in current buffer, select region and
-press <C-x l> to letterbox, press <C-x t> to toggle letterbox
-visibility, press <C-x d> to remove all active letterboxes."
+press \\[letterbox-add] to letterbox, press \\[letterbox-toggle] to
+toggle letterbox visibility, press \\[letterbox-remove] to remove
+all active letterboxes.
+
+Turning the mode off only hides the letterboxes of the buffer;
+they are redisplayed when the mode is turned on again."
   :init-value nil
   :lighter " Letterbox"
   :keymap (let ((map (make-sparse-keymap)))
@@ -67,60 +110,63 @@ visibility, press <C-x d> to remove all active letterboxes."
             (define-key map (kbd "C-c t") 'letterbox-toggle)
             (define-key map (kbd "C-c r") 'letterbox-remove)
             map)
-  (setq letterbox-current-text nil)
-  (setq letterbox-is-visible t)
-  (remove-overlays (point-min) (point-max) 'category 'letterbox))
-
-(defvar letterbox-current-text nil)
-(defvar letterbox-is-visible t)
-
-(defgroup letterbox nil
-  "Letterbox text in current buffer"
-  :group 'convenience)
-
-(defface letterbox-face
-  '(t (:background (face-attribute 'default :foreground)
-       :foreground (face-attribute 'default :foreground)))
-  "Letterbox mode face."
-  :group 'letterbox)
+  (if letterbox-mode
+      (letterbox-refresh-overlays)
+    (remove-overlays (point-min) (point-max) 'category 'letterbox)))
 
 ;;;###autoload
-(defun letterbox-add()
+(defun letterbox-add ()
+  "Letterbox the active region of the current buffer."
   (interactive)
-  (if (and mark-active (not (= 0 (- (region-beginning) (region-end)))))
-      (progn (add-to-list 'letterbox-current-text
-                          (list (region-beginning) (region-end))
-                          t)
-             (deactivate-mark)
-             (unless letterbox-is-visible
-               (letterbox-toggle))
-             (letterbox-refresh-overlays))
-    (message "No region active to add text to a letterbox.")))
+  (if (not (use-region-p))
+      (message "No region active to add text to a letterbox.")
+    (push (cons (copy-marker (region-beginning))
+                (copy-marker (region-end)))
+          letterbox-current-text)
+    (setq letterbox-is-visible t)
+    (deactivate-mark)
+    (letterbox-refresh-overlays)
+    (message "Letterbox added")))
 
 ;;;###autoload
-(defun letterbox-remove()
+(defun letterbox-remove ()
+  "Remove all the letterboxes of the current buffer."
   (interactive)
+  (dolist (letterbox letterbox-current-text)
+    (set-marker (car letterbox) nil)
+    (set-marker (cdr letterbox) nil))
   (setq letterbox-current-text nil)
   (letterbox-refresh-overlays)
   (message "All letterboxes removed"))
 
 ;;;###autoload
-(defun letterbox-toggle()
+(defun letterbox-toggle ()
+  "Hide or show the letterboxes of the current buffer."
   (interactive)
   (setq letterbox-is-visible (not letterbox-is-visible))
-  (if letterbox-is-visible
-      (message "Letterbox enabled")
-    (message "Letterbox disabled"))
+  (message "Letterbox %s" (if letterbox-is-visible "enabled" "disabled"))
   (letterbox-refresh-overlays))
 
-(defun letterbox-refresh-overlays()
-  (if (and letterbox-is-visible letterbox-current-text)
-      (dolist (letterbox-list letterbox-current-text)
-        (let ((ov (make-overlay (car letterbox-list)
-                                (cadr letterbox-list))))
-          (overlay-put ov 'category 'letterbox)
-          (overlay-put ov 'face 'letterbox-face)))
-    (remove-overlays (point-min) (point-max) 'category 'letterbox)))
+(defun letterbox-refresh-overlays ()
+  "Redraw the letterboxes of the current buffer."
+  (remove-overlays (point-min) (point-max) 'category 'letterbox)
+  (when (and letterbox-is-visible letterbox-current-text)
+    (let ((color (letterbox--color)))
+      (dolist (letterbox letterbox-current-text)
+        (let ((beg (car letterbox))
+              (end (cdr letterbox)))
+          (when (and (markerp beg) (marker-position beg)
+                     (markerp end) (marker-position end)
+                     (< (marker-position beg) (marker-position end)))
+            (let ((ov (make-overlay beg end)))
+              (overlay-put ov 'category 'letterbox)
+              (overlay-put ov 'evaporate t)
+              ;; In a face list the earlier faces take precedence, so
+              ;; the computed colors win over `letterbox-face'.
+              (overlay-put ov 'face
+                           (list (list :background color
+                                       :foreground color)
+                                 'letterbox-face)))))))))
 
 (provide 'letterbox-mode)
 ;; Local Variables:
