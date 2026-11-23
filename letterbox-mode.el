@@ -92,6 +92,36 @@ colors are computed from the `default' face by
 `letterbox-refresh-overlays', see `letterbox--color'."
   :group 'letterbox)
 
+(defun letterbox--bounds (letterbox)
+  "Return the (BEG . END) markers described by LETTERBOX.
+
+LETTERBOX is normally a cons of markers, but plain buffer
+positions (the format used by older versions of this package) are
+accepted and converted on the fly."
+  (let* ((beg (car letterbox))
+         (end (if (consp (cdr letterbox)) (cadr letterbox) (cdr letterbox))))
+    (unless (markerp beg) (setq beg (copy-marker beg)))
+    (unless (markerp end) (setq end (copy-marker end)))
+    (cons beg end)))
+
+(defun letterbox--normalize ()
+  "Rewrite `letterbox-current-text' as (BEG . END) pairs of markers.
+
+This drops entries that do not describe two buffer positions, so
+that stale data (for example buffer positions stored by an older
+version of this package) cannot break the commands."
+  (setq letterbox-current-text
+        (delq nil
+              (mapcar (lambda (letterbox)
+                        (when (and (consp letterbox)
+                                   (integer-or-marker-p (car letterbox))
+                                   (integer-or-marker-p
+                                    (if (consp (cdr letterbox))
+                                        (cadr letterbox)
+                                      (cdr letterbox))))
+                          (letterbox--bounds letterbox)))
+                      letterbox-current-text))))
+
 ;;;###autoload
 (define-minor-mode letterbox-mode
   "Mode for hiding sensitive text on a buffer.
@@ -120,6 +150,7 @@ they are redisplayed when the mode is turned on again."
   (interactive)
   (if (not (use-region-p))
       (message "No region active to add text to a letterbox.")
+    (letterbox--normalize)
     (push (cons (copy-marker (region-beginning))
                 (copy-marker (region-end)))
           letterbox-current-text)
@@ -132,6 +163,7 @@ they are redisplayed when the mode is turned on again."
 (defun letterbox-remove ()
   "Remove all the letterboxes of the current buffer."
   (interactive)
+  (letterbox--normalize)
   (dolist (letterbox letterbox-current-text)
     (set-marker (car letterbox) nil)
     (set-marker (cdr letterbox) nil))
@@ -149,6 +181,7 @@ they are redisplayed when the mode is turned on again."
 
 (defun letterbox-refresh-overlays ()
   "Redraw the letterboxes of the current buffer."
+  (letterbox--normalize)
   (remove-overlays (point-min) (point-max) 'category 'letterbox)
   (when (and letterbox-is-visible letterbox-current-text)
     (let ((color (letterbox--color)))
